@@ -39,7 +39,7 @@ jobs:
       - name: Set Emscripten EM_NODE_JS
         run: echo "EM_NODE_JS=$(which node)" >> $GITHUB_ENV
       - name: Set the webR CDN URL as the BASE_URL
-        run: echo "BASE_URL=https://webr.r-wasm.org/${{ github.ref_name }}/" > "$HOME/.webr-config.mk"
+        run: echo "BASE_URL=https://ouseful-demos.github.io/jupyterlite-m348-demo/${{ github.ref_name }}/" > "$HOME/.webr-config.mk"
         shell: bash
       - name: Set versioning for main
         if: "contains(github.ref_name, 'main')"
@@ -71,22 +71,8 @@ jobs:
       - name: Build webR documentation
         run: cd src/docs && make
         shell: bash
-      - name: Publish to npm
-        if: "!contains(github.ref_name, 'main')"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: cd src && make publish
-      - name: Workaround for codecov/feedback#263
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Report code coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: src/coverage/lcov.info
-          flags: unittests
-          name: codecov-webr
-          fail_ci_if_error: true
-          verbose: true
-          token: ${{ secrets.CC_TOKEN }}
+      - name: Build npm package
+        run: cd src && make package
       - name: Archive webR build artifacts
         uses: actions/upload-artifact@v3
         with:
@@ -99,101 +85,3 @@ jobs:
           name: webr-docs
           path: |
             src/docs/_site
-  deploy:
-    name: Deploy webR to S3
-    needs: build
-    runs-on: ubuntu-latest
-    environment: deploy
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Download build archive
-        uses: actions/download-artifact@v3
-        with:
-          name: webr-dist
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE }}
-          aws-region: ${{ secrets.AWS_REGION }}
-      - name: Upload files to S3 bucket
-        run: |
-          aws s3 sync . s3://${{ secrets.AWS_S3_BUCKET }}/_webr/${{ github.ref_name }}/
-          gzip -k R.bin.wasm
-          aws s3 cp --content-encoding="gzip" --content-type="application/wasm" \
-            --metadata-directive="REPLACE" R.bin.wasm.gz \
-            s3://${{ secrets.AWS_S3_BUCKET }}/_webr/${{ github.ref_name }}/R.bin.wasm
-          aws s3 cp --exclude "*" --include "*.js.metadata" --recursive \
-            --content-type="text/javascript" --metadata-directive="REPLACE" \
-            s3://${{ secrets.AWS_S3_BUCKET }}/_webr/${{ github.ref_name }}/ \
-            s3://${{ secrets.AWS_S3_BUCKET }}/_webr/${{ github.ref_name }}/
-          aws s3 cp --exclude "*" --include "*.data" --include "*.so" --recursive \
-            --content-type="application/wasm" --metadata-directive="REPLACE" \
-            s3://${{ secrets.AWS_S3_BUCKET }}/_webr/${{ github.ref_name }}/ \
-            s3://${{ secrets.AWS_S3_BUCKET }}/_webr/${{ github.ref_name }}/
-          aws cloudfront create-invalidation --distribution-id \
-            ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/latest/*" \
-            "/${{ github.ref_name }}/*"
-  deploy_docs:
-    name: Deploy webR documentation to S3
-    needs: build
-    runs-on: ubuntu-latest
-    environment: deploy
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Download docs archive
-        uses: actions/download-artifact@v3
-        with:
-          name: webr-docs
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE }}
-          aws-region: ${{ secrets.AWS_REGION }}
-      - name: Upload files to S3 bucket
-        run: |
-          aws s3 sync . s3://${{ secrets.AWS_S3_BUCKET }}/_docs/webr/${{ github.ref_name }}/
-  build_docker:
-    name: Build Docker image
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Log in to the GitHub Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-      - name: Build and publish Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          build-args: |
-            WEBRCI_SHA=${{ github.sha }}
-            MAKE_LIBS_TARGET=all
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-  build-nix:
-    name: Build Nix flake
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-        with:
-          extra-conf: "sandbox = false"
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Build Nix package
-        run: nix build --print-build-logs
